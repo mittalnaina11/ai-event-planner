@@ -1,4 +1,4 @@
-const BASE = "/api";
+const BASE = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "") + "/api";
 export const getToken = () => localStorage.getItem("token");
 export const getUser = () => JSON.parse(localStorage.getItem("user") || "null");
 export const saveAuth = (d) => { localStorage.setItem("token", d.token); localStorage.setItem("user", JSON.stringify(d)); };
