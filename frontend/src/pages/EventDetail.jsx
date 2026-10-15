@@ -405,6 +405,36 @@ function Discover({ ev, reload }) {
               >
                 <h3>{p.name}</h3>
                 
+                {p.photo_url && (
+                  <img
+                    src={p.photo_url}
+                    alt={p.name}
+                    loading="lazy"
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      e.currentTarget.style.display = "none";
+                    }}
+                    style={{
+                      width: "100%",
+                      height: 180,
+                      objectFit: "cover",
+                      borderRadius: 12,
+                      marginBottom: 10,
+                    }}
+                  />
+                )}
+
+                {p.ai_score != null && (
+                  <p className="muted">
+                    ✨ AI relevance: {p.ai_score}/100
+                  </p>
+                )}
+
+                {p.ai_reason && (
+                  <p className="muted">✨ {p.ai_reason}</p>
+                )}
+
+                                
                 
                 {(() => {
                   const type = (ev.event_type || "").toLowerCase();

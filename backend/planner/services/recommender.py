@@ -1,4 +1,5 @@
 """Content-based venue/vendor recommender (TF-IDF + cosine similarity) with a user-rating feedback loop."""
+from . import ai
 from ..models import Rating, Vendor, Venue
 from .online_discovery import discover_places
 
@@ -43,6 +44,7 @@ def recommend(event, user=None, limit=5):
 
     venues = list(Venue.objects.filter(capacity__gte=max(event.guest_count, 1)))
     online_places = discover_places(event.city, limit=15)
+    online_places = ai.rank_online_places(event, online_places)
     sims = _similarity(query, [f"{v.tags} {'outdoor garden' if v.outdoor else 'indoor hall ac'}" for v in venues])
     uavg = _user_avg("venue")
     out_v = []

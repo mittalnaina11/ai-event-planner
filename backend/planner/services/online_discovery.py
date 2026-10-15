@@ -1,11 +1,38 @@
-
 """Discover real-world venues and event-related places via OpenStreetMap."""
 import json
 import urllib.parse
 import urllib.request
+from urllib.parse import quote, urlparse
+
 
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+
+
+def get_place_photo_url(tags):
+    """Return a usable photo URL when OpenStreetMap has one."""
+    tags = tags or {}
+
+    # Use a directly mapped image if available.
+    image = tags.get("image") or tags.get("image:0")
+    if image:
+        parsed = urlparse(image)
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            return image
+
+    # Otherwise, try a Wikimedia Commons image.
+    commons = tags.get("wikimedia_commons", "")
+    if commons.startswith("File:"):
+        filename = commons[5:].strip()
+        if filename:
+            return (
+                "https://commons.wikimedia.org/wiki/Special:FilePath/"
+                + quote(filename, safe="")
+            )
+
+    # Some places do not have mapped photos.
+    return None
+
 
 
 def discover_places(city, limit=15):
@@ -76,6 +103,7 @@ def discover_places(city, limit=15):
             "lng": lon,
             "website": tags.get("website", ""),
             "phone": tags.get("phone", tags.get("contact:phone", "")),
+            "photo_url": get_place_photo_url(tags),
             "source": "OpenStreetMap",
             "source_url": (
                 f"https://www.openstreetmap.org/{item['type']}/{item['id']}"

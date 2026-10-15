@@ -153,3 +153,117 @@ def sentiment(text):
     words = set(re.findall(r"[a-z']+", text.lower()))
     s = len(words & POS) - len(words & NEG)
     return "positive" if s > 0 else "negative" if s < 0 else "neutral"
+
+
+def rank_online_places(event, places):
+    """
+    Rank real OpenStreetMap results using Gemini.
+    If Gemini is unavailable, keep the original place list.
+    """
+    if not places:
+        return places
+
+    # Keep the prompt small and do not send unnecessary place data.
+    candidates = []
+    for place in places[:30]:
+        candidates.append({
+            "name": place.get("name", ""),
+            "city": place.get("city", getattr(event, "city", "")),
+            "category": place.get("category", ""),
+            "address": place.get("address", ""),
+            "source_url": place.get("source_url", ""),
+        })
+
+    prompt = f"""
+You are helping plan a real event.
+
+Event:
+- Title: {getattr(event, "title", "Event")}
+- Type: {getattr(event, "event_type", "other")}
+- City: {getattr(event, "city", "")}
+- Guests: {getattr(event, "guest_count", 0)}
+- Budget in INR: {getattr(event, "budget", 0)}
+- Outdoor event: {getattr(event, "is_outdoor", False)}
+- Theme: {getattr(event, "theme", "")}
+
+Here are places retrieved from OpenStreetMap:
+{json.dumps(candidates, ensure_ascii=False)}
+
+Rank places for likely relevance to this event. Use only the supplied
+facts. Do not invent capacity, prices, ratings, availability, or facilities.
+A place's category is only a clue, not proof it can host an event.
+
+Return ONLY a valid JSON array, maximum 10 items, in this format:
+[
+  {{
+    "source_url": "exact source_url from the supplied place",
+    "score": 85,
+    "reason": "Short explanation of why it may suit this event"
+  }}
+]
+Use each supplied source_url exactly. Do not invent places or URLs.
+"""
+
+    try:
+        raw = llm(prompt)
+        if not raw:
+            return places
+
+        # Handle responses wrapped in Markdown code fences.
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1]
+            if raw.endswith("```"):
+                raw = raw[:-3].strip()
+
+        ranked = json.loads(raw)
+        if not isinstance(ranked, list):
+            return places
+
+        by_source = {
+            p.get("source_url"): p
+            for p in places
+            if p.get("source_url")
+        }
+
+        result = []
+        seen = set()
+
+        for item in ranked:
+            if not isinstance(item, dict):
+                continue
+
+            source = item.get("source_url")
+            place = by_source.get(source)
+
+            # Accept only places that came from our actual OSM results.
+            if not place or source in seen:
+                continue
+
+            seen.add(source)
+            enriched = dict(place)
+
+            try:
+                score = int(item.get("score", 0))
+            except (TypeError, ValueError):
+                score = 0
+
+            enriched["ai_score"] = max(0, min(100, score))
+            enriched["ai_reason"] = str(item.get("reason", ""))[:300]
+            result.append(enriched)
+
+        # If Gemini returned unusable JSON, preserve existing results.
+        if not result:
+            return places
+
+        # Preserve any places Gemini did not include, after ranked ones.
+        for place in places:
+            if place.get("source_url") not in seen:
+                result.append(place)
+
+        return result
+
+    except Exception:
+        # Recommendations must still work if Gemini fails.
+        return places
+
