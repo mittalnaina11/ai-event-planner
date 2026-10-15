@@ -1,6 +1,6 @@
 """Content-based venue/vendor recommender (TF-IDF + cosine similarity) with a user-rating feedback loop."""
-from . import ai
 from ..models import Rating, Vendor, Venue
+from . import ai
 from .online_discovery import discover_places
 
 try:

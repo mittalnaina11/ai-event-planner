@@ -1,26 +1,29 @@
+
 """Discover real-world venues and event-related places via OpenStreetMap."""
+
 import json
 import urllib.parse
 import urllib.request
 from urllib.parse import quote, urlparse
 
 
-
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+OVERPASS_URLS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.nchc.org.tw/api/interpreter",
+]
 
 
 def get_place_photo_url(tags):
-    """Return a usable photo URL when OpenStreetMap has one."""
+    """Return a mapped photo URL when one is available."""
     tags = tags or {}
 
-    # Use a directly mapped image if available.
     image = tags.get("image") or tags.get("image:0")
     if image:
         parsed = urlparse(image)
         if parsed.scheme in ("http", "https") and parsed.netloc:
             return image
 
-    # Otherwise, try a Wikimedia Commons image.
     commons = tags.get("wikimedia_commons", "")
     if commons.startswith("File:"):
         filename = commons[5:].strip()
@@ -30,20 +33,20 @@ def get_place_photo_url(tags):
                 + quote(filename, safe="")
             )
 
-    # Some places do not have mapped photos.
     return None
 
 
-
 def discover_places(city, limit=15):
-    """Return publicly mapped places relevant to event planning in a city."""
+    """Return real, publicly mapped places for an event-planning city."""
     if not city or not city.strip():
         return []
 
-    
+    city_name = city.strip()
+    escaped_city = city_name.replace("\\", "\\\\").replace('"', '\\"')
+
     query = f"""
     [out:json][timeout:25];
-    area["name"="{city.strip()}"]["boundary"="administrative"]->.searchArea;
+    area["name"="{escaped_city}"]["boundary"="administrative"]->.searchArea;
     (
       nwr["leisure"="event_venue"](area.searchArea);
       nwr["amenity"="events_venue"](area.searchArea);
@@ -56,27 +59,60 @@ def discover_places(city, limit=15):
     out center tags;
     """
 
+    elements = []
 
-    request = urllib.request.Request(
-        OVERPASS_URL,
-        data=urllib.parse.urlencode({"data": query}).encode(),
-        headers={
-            "User-Agent": "AIEventPlanner/1.0 (event venue discovery)",
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-    )
+    # Try alternate public Overpass servers if one fails or returns no matches.
+    for endpoint in OVERPASS_URLS:
+        request = urllib.request.Request(
+            endpoint,
+            data=urllib.parse.urlencode({"data": query}).encode(),
+            headers={
+                "User-Agent": "AIEventPlanner/1.0 (event venue discovery)",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
 
-    try:
-        with urllib.request.urlopen(request, timeout=25) as response:
-            data = json.load(response)
-    except Exception as e:
-        print(f"OpenStreetMap discovery failed for {city}: {e}", flush=True)
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = json.load(response)
+
+            found = payload.get("elements", [])
+            if found:
+                elements = found
+                print(
+                    f"OpenStreetMap found {len(elements)} elements "
+                    f"for {city_name} using {endpoint}",
+                    flush=True,
+                )
+                break
+
+            print(
+                f"Overpass returned no matching elements for {city_name}: "
+                f"{endpoint}",
+                flush=True,
+            )
+
+        except Exception as exc:
+            print(
+                f"Overpass server failed for {city_name} "
+                f"({endpoint}): {exc}",
+                flush=True,
+            )
+
+    if not elements:
+        print(
+            f"No OpenStreetMap places found for {city_name} "
+            "after trying all servers.",
+            flush=True,
+        )
         return []
 
     places = []
-    for item in data.get("elements", []):
+
+    for item in elements:
         tags = item.get("tags", {})
         name = tags.get("name")
+
         if not name:
             continue
 
@@ -86,20 +122,18 @@ def discover_places(city, limit=15):
 
         places.append({
             "name": name,
-            "city": city.strip(),
+            "city": city_name,
             "category": (
                 tags.get("leisure")
                 or tags.get("amenity")
                 or tags.get("tourism")
                 or "place"
             ),
-            "address": ", ".join(
-                filter(None, [
-                    tags.get("addr:street"),
-                    tags.get("addr:city"),
-                    tags.get("addr:postcode"),
-                ])
-            ),
+            "address": ", ".join(filter(None, [
+                tags.get("addr:street"),
+                tags.get("addr:city"),
+                tags.get("addr:postcode"),
+            ])),
             "lat": lat,
             "lng": lon,
             "website": tags.get("website", ""),
@@ -107,7 +141,8 @@ def discover_places(city, limit=15):
             "photo_url": get_place_photo_url(tags),
             "source": "OpenStreetMap",
             "source_url": (
-                f"https://www.openstreetmap.org/{item['type']}/{item['id']}"
+                f"https://www.openstreetmap.org/"
+                f"{item['type']}/{item['id']}"
             ),
         })
 
