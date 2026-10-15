@@ -67,10 +67,11 @@ def discover_places(city, limit=15):
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=25) as response:
-            data = json.load(response)
-    except Exception:
-        return []
+    with urllib.request.urlopen(request, timeout=25) as response:
+        data = json.load(response)
+    except Exception as e:
+    print(f"OpenStreetMap discovery failed for {city}: {e}", flush=True)
+    return []
 
     places = []
     for item in data.get("elements", []):
