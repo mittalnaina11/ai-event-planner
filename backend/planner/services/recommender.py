@@ -43,8 +43,17 @@ def recommend(event, user=None, limit=5):
     my = {(r.kind, r.object_id): r.score for r in Rating.objects.filter(user=user)} if user else {}
 
     venues = list(Venue.objects.filter(capacity__gte=max(event.guest_count, 1)))
+        # First try real OpenStreetMap places.
     online_places = discover_places(event.city, limit=15)
-    online_places = ai.rank_online_places(event, online_places)
+
+    if online_places:
+        # Rank actual OSM places with Gemini.
+        online_places = ai.rank_online_places(event, online_places)
+    else:
+        # Overpass unavailable: use Google Search-grounded Gemini.
+        online_places = ai.discover_places_with_gemini(
+            event, limit=10
+        )
     sims = _similarity(query, [f"{v.tags} {'outdoor garden' if v.outdoor else 'indoor hall ac'}" for v in venues])
     uavg = _user_avg("venue")
     out_v = []
@@ -84,28 +93,42 @@ def recommend(event, user=None, limit=5):
         per_cat[x["category"]] = per_cat.get(x["category"], 0) + 1
         if per_cat[x["category"]] <= 2:
             diverse.append(x)
+        
         online_results = []
+
     for p in online_places:
         online_results.append({
             "id": None,
-            "name": p["name"],
-            "city": p["city"],
+            "name": p.get("name", ""),
+            "city": p.get("city", event.city),
+            "category": p.get("category", ""),
             "price": None,
             "rating": None,
             "capacity": None,
-            "tags": p["category"],
+            "tags": p.get("category", ""),
             "outdoor": False,
-            "lat": p["lat"],
-            "lng": p["lng"],
+            "lat": p.get("lat"),
+            "lng": p.get("lng"),
             "score": 0,
-            "why": ["Discovered online via OpenStreetMap; details need verification"],
+            "why": [p.get(
+                "verification_note",
+                "Discovered online; details need verification"
+            )],
             "my_rating": None,
-            "source": p["source"],
-            "source_url": p["source_url"],
-            "website": p["website"],
-            "address": p["address"],
+            "source": p.get("source", ""),
+            "source_url": p.get("source_url", ""),
+            "website": p.get("website", ""),
+            "phone": p.get("phone", ""),
+            "address": p.get("address", ""),
+            "photo_url": p.get("photo_url"),
+            "ai_score": p.get("ai_score"),
+            "ai_reason": p.get("ai_reason", ""),
+            "verification_note": p.get(
+                "verification_note", ""
+            ),
             "online": True,
         })
+
 
     return {
         "venues": out_v[:limit],

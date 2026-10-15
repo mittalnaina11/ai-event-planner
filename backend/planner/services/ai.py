@@ -16,17 +16,52 @@ MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", 
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 
-def llm(prompt):
+
+def llm(prompt, use_google_search=False):
     key = settings.GEMINI_API_KEY
     if not key:
         return None
+
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.GEMINI_MODEL}:generateContent"
-        req = urllib.request.Request(url, data=json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode(),
-                                     headers={"Content-Type": "application/json", "x-goog-api-key": key})
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.load(r)["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except Exception:
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/"
+            f"models/{settings.GEMINI_MODEL}:generateContent"
+        )
+
+        payload = {
+            "contents": [
+                {"parts": [{"text": prompt}]}
+            ]
+        }
+
+        if use_google_search:
+            payload["tools"] = [{"google_search": {}}]
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": key,
+            },
+        )
+
+        with urllib.request.urlopen(req, timeout=40) as response:
+            data = json.load(response)
+
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return None
+
+        parts = candidates[0].get("content", {}).get("parts", [])
+        return "".join(
+            part.get("text", "")
+            for part in parts
+            if part.get("text")
+        ).strip() or None
+
+    except Exception as exc:
+        print(f"Gemini API error: {exc}")
         return None
 
 
@@ -266,4 +301,141 @@ Use each supplied source_url exactly. Do not invent places or URLs.
     except Exception:
         # Recommendations must still work if Gemini fails.
         return places
+
+def discover_places_with_gemini(event, limit=10):
+    import urllib.parse
+    import urllib.error
+
+    key = getattr(settings, "GEMINI_API_KEY", None)
+    if not key or not event.city:
+        return []
+
+    prompt = f"""
+    Find real, currently operating event venues in
+    {event.city}, India using Google Search.
+
+    Event type: {event.event_type}
+    Guest count: {event.guest_count}
+    Budget in INR: {event.budget}
+    Outdoor: {event.is_outdoor}
+    Theme: {event.theme}
+
+    Suggest up to {min(limit, 10)} relevant venues.
+    Only include businesses supported by search results.
+    Do not invent prices, phone numbers, addresses,
+    ratings, capacity or websites.
+
+    Return ONLY a JSON array:
+    [
+      {{
+        "name": "Venue name",
+        "category": "Banquet hall",
+        "reason": "Why it may suit this event",
+        "score": 85
+      }}
+    ]
+    """
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        f"models/{settings.GEMINI_MODEL}:generateContent"
+    )
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "tools": [{"google_search": {}}],
+    }
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": key,
+            },
+        )
+
+        with urllib.request.urlopen(req, timeout=45) as response:
+            data = json.load(response)
+
+        candidate = data["candidates"][0]
+        parts = candidate.get("content", {}).get("parts", [])
+        raw = "".join(
+            p.get("text", "") for p in parts if p.get("text")
+        ).strip()
+
+        # Require grounding references, not just model-generated text.
+        metadata = candidate.get("groundingMetadata", {})
+        chunks = metadata.get("groundingChunks", [])
+        sources = [
+            c.get("web", {}).get("uri")
+            for c in chunks
+            if c.get("web", {}).get("uri", "").startswith("https://")
+        ]
+
+        if not sources:
+            return []
+
+        raw = re.sub(
+            r"^```(?:json)?\s*|\s*```$",
+            "",
+            raw,
+            flags=re.I,
+        ).strip()
+
+        suggestions = json.loads(raw)
+        if not isinstance(suggestions, list):
+            return []
+
+        results = []
+        seen = set()
+
+        for item in suggestions[:limit]:
+            if not isinstance(item, dict):
+                continue
+
+            name = str(item.get("name") or "").strip()
+            if not name or name.lower() in seen:
+                continue
+
+            seen.add(name.lower())
+
+            try:
+                score = max(
+                    0, min(100, int(item.get("score", 0)))
+                )
+            except (ValueError, TypeError):
+                score = 0
+
+            results.append({
+                "name": name,
+                "city": event.city,
+                "category": str(
+                    item.get("category") or "Event venue"
+                )[:100],
+                "address": "",
+                "phone": "",
+                "website": "",
+                "lat": None,
+                "lng": None,
+                "photo_url": None,
+                "source": "Gemini + Google Search",
+                "source_url": "",
+                "ai_score": score,
+                "ai_reason": str(
+                    item.get("reason") or ""
+                )[:300],
+                "verification_note": (
+                    "AI suggestion based on Google Search. "
+                    "Venue details are not independently verified."
+                ),
+                "online": True,
+            })
+
+        return results
+
+    except (Exception) as exc:
+        print(f"Gemini venue discovery failed: {exc}")
+        return []
 

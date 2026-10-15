@@ -359,8 +359,8 @@ function Discover({ ev, reload }) {
         <h2>🌐 Places discovered online</h2>
 
         <p className="muted">
-          Publicly mapped places for your event city. Verify event
-          suitability, capacity, pricing and availability directly with each business.
+          Places discovered from OpenStreetMap or Google Search. Check each business’s
+          existence, event suitability, capacity, pricing and availability before booking.
         </p>
 
         <div className="row" style={{ margin: "10px 0" }}>
@@ -404,7 +404,19 @@ function Discover({ ev, reload }) {
                 key={p.source_url || `${p.name}-${i}`}
               >
                 <h3>{p.name}</h3>
-                
+
+                {p.source === "Gemini + Google Search" && (
+                  <p className="badge" style={{ display: "inline-block", margin: "0 0 8px" }}>
+                    ✨ AI suggestion · Google Search
+                  </p>
+                )}
+
+                {p.verification_note && (
+                  <p className="muted" style={{ margin: "4px 0 8px" }}>
+                    ⚠️ {p.verification_note}
+                  </p>
+                )}
+
                 {p.photo_url && (
                   <img
                     src={p.photo_url}
@@ -475,6 +487,12 @@ function Discover({ ev, reload }) {
                   </p>
                 )}
 
+                {p.estimated_price_range && (
+                  <p className="muted">
+                    💰 Estimated price: {p.estimated_price_range} (AI estimate; confirm with the venue)
+                  </p>
+                )}
+
                 <p className="muted">
                   Capacity, price and rating not verified
                 </p>
@@ -498,7 +516,7 @@ function Discover({ ev, reload }) {
                       target="_blank"
                       rel="noreferrer"
                     >
-                      View OpenStreetMap source
+                      {p.source === "Gemini + Google Search" ? "View source" : "View OpenStreetMap source"}
                     </a>
                   </p>
                 )}
