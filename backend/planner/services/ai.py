@@ -1,6 +1,7 @@
 """AI helpers. Uses Gemini when GEMINI_API_KEY is set, otherwise smart rule-based fallbacks (works offline)."""
 import json
 import re
+import urllib.parse
 import urllib.request
 from datetime import date, timedelta
 
@@ -303,139 +304,122 @@ Use each supplied source_url exactly. Do not invent places or URLs.
         return places
 
 def discover_places_with_gemini(event, limit=10):
-    import urllib.parse
+    """Find real venues in the event's city using Gemini + Google Search grounding."""
     import urllib.error
 
     key = getattr(settings, "GEMINI_API_KEY", None)
-    if not key or not event.city:
+    if not key:
+        print("Gemini discovery skipped: GEMINI_API_KEY is not set.", flush=True)
+        return []
+    if not event.city:
         return []
 
     prompt = f"""
-    Find real, currently operating event venues in
-    {event.city}, India using Google Search.
+Use Google Search to find real, currently operating places in {event.city}, India
+that could host this event: banquet halls, event venues, hotels with halls,
+resorts, lawns/gardens, party restaurants and community halls.
 
-    Event type: {event.event_type}
-    Guest count: {event.guest_count}
-    Budget in INR: {event.budget}
-    Outdoor: {event.is_outdoor}
-    Theme: {event.theme}
+Event type: {event.event_type}
+Guests: {event.guest_count}
+Budget (INR): {event.budget}
+Outdoor: {event.is_outdoor}
+Theme: {event.theme}
 
-    Suggest up to {min(limit, 10)} relevant venues.
-    Only include businesses supported by search results.
-    Do not invent prices, phone numbers, addresses,
-    ratings, capacity or websites.
+Return up to {min(limit, 10)} places. Only include places you found in search
+results. Give address, phone and website ONLY if the search results show them;
+otherwise use an empty string. Never invent details.
 
-    Return ONLY a JSON array:
-    [
-      {{
-        "name": "Venue name",
-        "category": "Banquet hall",
-        "reason": "Why it may suit this event",
-        "score": 85
-      }}
-    ]
-    """
+Respond with ONLY a JSON array, no other text:
+[{{"name": "", "category": "banquet hall|hotel|restaurant|resort|venue",
+   "address": "", "phone": "", "website": "",
+   "reason": "why it suits this event", "score": 0-100}}]
+"""
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/"
-        f"models/{settings.GEMINI_MODEL}:generateContent"
-    )
+    models = []
+    for m in (getattr(settings, "GEMINI_MODEL", ""), "gemini-3.5-flash", "gemini-2.5-flash"):
+        if m and m not in models:
+            models.append(m)
 
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "tools": [{"google_search": {}}],
     }
 
-    try:
+    data = None
+    for model in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "x-goog-api-key": key,
-            },
+            headers={"Content-Type": "application/json", "x-goog-api-key": key},
         )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                data = json.load(response)
+            print(f"Gemini discovery OK using {model}", flush=True)
+            break
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", "ignore")[:300]
+            print(f"Gemini discovery HTTP {exc.code} on {model}: {body}", flush=True)
+        except Exception as exc:
+            print(f"Gemini discovery failed on {model}: {exc}", flush=True)
 
-        with urllib.request.urlopen(req, timeout=45) as response:
-            data = json.load(response)
+    if not data:
+        return []
 
+    try:
         candidate = data["candidates"][0]
         parts = candidate.get("content", {}).get("parts", [])
-        raw = "".join(
-            p.get("text", "") for p in parts if p.get("text")
-        ).strip()
+        raw = "".join(p.get("text", "") for p in parts if p.get("text")).strip()
 
-        # Require grounding references, not just model-generated text.
-        metadata = candidate.get("groundingMetadata", {})
-        chunks = metadata.get("groundingChunks", [])
-        sources = [
-            c.get("web", {}).get("uri")
-            for c in chunks
-            if c.get("web", {}).get("uri", "").startswith("https://")
-        ]
-
-        if not sources:
+        # Pull the JSON array out even if the model added prose or code fences.
+        match = re.search(r"\[.*\]", raw, re.S)
+        if not match:
+            print(f"Gemini discovery: no JSON array in reply: {raw[:200]}", flush=True)
             return []
+        suggestions = json.loads(match.group(0))
 
-        raw = re.sub(
-            r"^```(?:json)?\s*|\s*```$",
-            "",
-            raw,
-            flags=re.I,
-        ).strip()
+        chunks = candidate.get("groundingMetadata", {}).get("groundingChunks", [])
+        sources = [c.get("web", {}).get("uri", "") for c in chunks if c.get("web", {}).get("uri")]
+        search_url = "https://www.google.com/search?q="
 
-        suggestions = json.loads(raw)
-        if not isinstance(suggestions, list):
-            return []
-
-        results = []
-        seen = set()
-
-        for item in suggestions[:limit]:
+        results, seen = [], set()
+        for item in suggestions:
             if not isinstance(item, dict):
                 continue
-
             name = str(item.get("name") or "").strip()
             if not name or name.lower() in seen:
                 continue
-
             seen.add(name.lower())
-
             try:
-                score = max(
-                    0, min(100, int(item.get("score", 0)))
-                )
-            except (ValueError, TypeError):
+                score = max(0, min(100, int(item.get("score", 0))))
+            except (TypeError, ValueError):
                 score = 0
-
+            website = str(item.get("website") or "").strip()
+            if website and not website.startswith(("http://", "https://")):
+                website = ""
             results.append({
                 "name": name,
                 "city": event.city,
-                "category": str(
-                    item.get("category") or "Event venue"
-                )[:100],
-                "address": "",
-                "phone": "",
-                "website": "",
+                "category": str(item.get("category") or "venue")[:100],
+                "address": str(item.get("address") or "")[:200],
+                "phone": str(item.get("phone") or "")[:50],
+                "website": website,
                 "lat": None,
                 "lng": None,
                 "photo_url": None,
                 "source": "Gemini + Google Search",
-                "source_url": "",
+                "source_url": search_url + urllib.parse.quote(f"{name} {event.city}"),
                 "ai_score": score,
-                "ai_reason": str(
-                    item.get("reason") or ""
-                )[:300],
-                "verification_note": (
-                    "AI suggestion based on Google Search. "
-                    "Venue details are not independently verified."
-                ),
+                "ai_reason": str(item.get("reason") or "")[:300],
+                "verification_note": "Found via Google Search"
+                + (" (sourced)" if sources else "")
+                + ". Confirm capacity, pricing and availability before booking.",
                 "online": True,
             })
-
+            if len(results) >= limit:
+                break
         return results
-
-    except (Exception) as exc:
-        print(f"Gemini venue discovery failed: {exc}")
+    except Exception as exc:
+        print(f"Gemini discovery parse error: {exc}", flush=True)
         return []
-

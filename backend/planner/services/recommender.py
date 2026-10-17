@@ -1,7 +1,6 @@
 """Content-based venue/vendor recommender (TF-IDF + cosine similarity) with a user-rating feedback loop."""
 from ..models import Rating, Vendor, Venue
 from . import ai
-from .online_discovery import discover_places
 
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
@@ -43,17 +42,9 @@ def recommend(event, user=None, limit=5):
     my = {(r.kind, r.object_id): r.score for r in Rating.objects.filter(user=user)} if user else {}
 
     venues = list(Venue.objects.filter(capacity__gte=max(event.guest_count, 1)))
-        # First try real OpenStreetMap places.
-    online_places = discover_places(event.city, limit=15)
+    # Places found online via Gemini + Google Search (no OpenStreetMap).
+    online_places = ai.discover_places_with_gemini(event, limit=10)
 
-    if online_places:
-        # Rank actual OSM places with Gemini.
-        online_places = ai.rank_online_places(event, online_places)
-    else:
-        # Overpass unavailable: use Google Search-grounded Gemini.
-        online_places = ai.discover_places_with_gemini(
-            event, limit=10
-        )
     sims = _similarity(query, [f"{v.tags} {'outdoor garden' if v.outdoor else 'indoor hall ac'}" for v in venues])
     uavg = _user_avg("venue")
     out_v = []
