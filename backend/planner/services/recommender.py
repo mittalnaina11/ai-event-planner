@@ -93,9 +93,8 @@ def recommend(event, user=None, limit=5):
         per_cat[x["category"]] = per_cat.get(x["category"], 0) + 1
         if per_cat[x["category"]] <= 2:
             diverse.append(x)
-        
-        online_results = []
 
+    online_results = []
     for p in online_places:
         online_results.append({
             "id": None,

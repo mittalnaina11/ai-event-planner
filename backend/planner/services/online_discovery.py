@@ -38,32 +38,47 @@ def get_place_photo_url(tags):
     return None
 
 
-def discover_places(city, limit=15):
-    """Return real, publicly mapped places for an event-planning city."""
-    if not city or not city.strip():
-        return []
+def _geocode_city(city_name):
+    """Look up a city centre via Nominatim (used when OSM has no admin-boundary area)."""
+    url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(
+        {"q": f"{city_name}, India", "format": "json", "limit": 1, "countrycodes": "in"}
+    )
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "AIEventPlanner/1.0 (event venue discovery)"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            data = json.load(response)
+        if data:
+            return float(data[0]["lat"]), float(data[0]["lon"])
+    except Exception as exc:
+        print(f"Nominatim geocoding failed for {city_name}: {exc}", flush=True)
+    return None
 
-    city_name = city.strip()
-    escaped_city = city_name.replace("\\", "\\\\").replace('"', '\\"')
 
-    query = f"""
-    [out:json][timeout:25];
-    area["name"="{escaped_city}"]["boundary"="administrative"]->.searchArea;
-    (
-      nwr["leisure"="event_venue"](area.searchArea);
-      nwr["amenity"="events_venue"](area.searchArea);
-      nwr["amenity"="banquet_hall"](area.searchArea);
-      nwr["building"="civic"](area.searchArea);
-      nwr["amenity"="community_centre"](area.searchArea);
-      nwr["tourism"="hotel"](area.searchArea);
-      nwr["amenity"="restaurant"](area.searchArea);
-    );
-    out center tags;
-    """
+def _build_query(escaped_city, center=None, radius=8000):
+    selectors = [
+        '["leisure"="event_venue"]',
+        '["amenity"="events_venue"]',
+        '["amenity"="banquet_hall"]',
+        '["building"="civic"]',
+        '["amenity"="community_centre"]',
+        '["tourism"="hotel"]',
+        '["amenity"="restaurant"]',
+    ]
+    if center:
+        scope = f"(around:{radius},{center[0]},{center[1]})"
+        header = ""
+    else:
+        scope = "(area.searchArea)"
+        header = (
+            f'area["name"="{escaped_city}"]["boundary"="administrative"]->.searchArea;\n'
+        )
+    body = "\n".join(f"      nwr{sel}{scope};" for sel in selectors)
+    return f"[out:json][timeout:25];\n{header}(\n{body}\n);\nout center tags;"
 
-    elements = []
 
-    # Try alternate public Overpass servers if one fails or returns no matches.
+def _run_overpass(query, city_name):
     for endpoint in OVERPASS_URLS:
         request = urllib.request.Request(
             endpoint,
@@ -73,40 +88,38 @@ def discover_places(city, limit=15):
                 "Content-Type": "application/x-www-form-urlencoded",
             },
         )
-
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
                 payload = json.load(response)
-
             found = payload.get("elements", [])
             if found:
-                elements = found
-                print(
-                    f"OpenStreetMap found {len(elements)} elements "
-                    f"for {city_name} using {endpoint}",
-                    flush=True,
-                )
-                break
-
-            print(
-                f"Overpass returned no matching elements for {city_name}: "
-                f"{endpoint}",
-                flush=True,
-            )
-
+                print(f"OpenStreetMap found {len(found)} elements for {city_name} using {endpoint}", flush=True)
+                return found
+            print(f"Overpass returned no matching elements for {city_name}: {endpoint}", flush=True)
         except Exception as exc:
-            print(
-                f"Overpass server failed for {city_name} "
-                f"({endpoint}): {exc}",
-                flush=True,
-            )
+            print(f"Overpass server failed for {city_name} ({endpoint}): {exc}", flush=True)
+    return []
+
+
+def discover_places(city, limit=15):
+    """Return real, publicly mapped places for an event-planning city."""
+    if not city or not city.strip():
+        return []
+
+    city_name = city.strip()
+    escaped_city = city_name.replace("\\", "\\\\").replace('"', '\\"')
+
+    # 1) Try the city's administrative boundary.
+    elements = _run_overpass(_build_query(escaped_city), city_name)
+
+    # 2) Small towns often have no boundary area in OSM: search around the city centre.
+    if not elements:
+        center = _geocode_city(city_name)
+        if center:
+            elements = _run_overpass(_build_query(escaped_city, center=center), city_name)
 
     if not elements:
-        print(
-            f"No OpenStreetMap places found for {city_name} "
-            "after trying all servers.",
-            flush=True,
-        )
+        print(f"No OpenStreetMap places found for {city_name} after trying all servers.", flush=True)
         return []
 
     places = []

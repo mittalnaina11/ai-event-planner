@@ -260,7 +260,9 @@ function Discover({ ev, reload }) {
   const [placeSearch, setPlaceSearch] = useState("");
 
   const load = () =>
-    api(`/events/${ev.id}/recommendations/`).then(setR);
+    api(`/events/${ev.id}/recommendations/`)
+      .then(setR)
+      .catch(() => setR({ venues: [], online_places: [], vendors: [] }));
 
   useEffect(() => {
     load();
